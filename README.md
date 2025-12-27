@@ -109,7 +109,7 @@ We use Supabase internally at Clave. This lets us evaluate:
 
 ## Deliverables
 
-1. **GitHub Repository** (public or private with access granted to: `[INSERT_GITHUB_HANDLES]`)
+1. **Forked GitHub Repository** (keep it public)
 2. **Code Structure** showing:
    - Data ingestion/normalization scripts
    - Supabase schema (migrations or SQL files)
@@ -123,6 +123,7 @@ We use Supabase internally at Clave. This lets us evaluate:
    - What you'd improve with more time
 4. **Working Demo** - Deployed (Vercel, Netlify, etc.) or clear local setup instructions
 5. **Supabase Project** - Share access or provide SQL export of your schema
+6. **Environment Variables** - Email us your `.env` file or credentials (API keys, Supabase URL/key, etc.) so we can run your project locally. Send to `carlos@tryclave.ai` and `valentina@tryclave.ai`
 
 ---
 
@@ -165,8 +166,8 @@ If anything is unclear, reach out to `carlos@tryclave.ai` or `valentina@tryclave
 ## Getting Started
 
 ```bash
-# Clone this repo
-git clone [repo-url]
+# Fork this repo to your own GitHub account, then clone your fork
+git clone [your-fork-url]
 
 # Check out the mock data
 ls data/sources/
