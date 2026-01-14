@@ -1,0 +1,261 @@
+{
+  "schema": {
+    "tables": {
+      "locations": {
+        "columns": [
+          "id (UUID, PK)",
+          "canonical_name (VARCHAR, UNIQUE) - e.g., 'Downtown', 'Airport', 'Mall Location', 'University'",
+          "toast_id (VARCHAR)",
+          "doordash_id (VARCHAR)",
+          "square_id (VARCHAR)",
+          "address_line_1 (VARCHAR)",
+          "city (VARCHAR)",
+          "state (VARCHAR)",
+          "zip_code (VARCHAR)",
+          "country (VARCHAR)",
+          "timezone (VARCHAR)",
+          "created_at (TIMESTAMPTZ)",
+          "updated_at (TIMESTAMPTZ)"
+        ],
+        "description": "Restaurant locations. Use canonical_name for queries, not external IDs."
+      },
+      "orders": {
+        "columns": [
+          "id (UUID, PK)",
+          "order_id (VARCHAR, UNIQUE)",
+          "source_system (VARCHAR) - 'Toast', 'DoorDash', 'Square'",
+          "location_id (UUID, FK -> locations.id)",
+          "external_order_id (VARCHAR)",
+          "timestamp_utc (TIMESTAMPTZ)",
+          "business_date (DATE)",
+          "hour_of_day (INTEGER) - 0-23, extracted from timestamp for analytics",
+          "day_of_week (INTEGER) - 0=Sunday, 6=Saturday, extracted from timestamp for analytics",
+          "order_type (VARCHAR) - 'DINE_IN', 'TAKE_OUT', 'PICKUP', 'DELIVERY'",
+          "total_amount_cents (INTEGER) - divide by 100.0 for dollars",
+          "subtotal_amount_cents (INTEGER)",
+          "tax_amount_cents (INTEGER)",
+          "tip_amount_cents (INTEGER)",
+          "net_revenue_cents (INTEGER)",
+          "fee_amount_cents (INTEGER)",
+          "payment_method (VARCHAR)",
+          "card_brand (VARCHAR)",
+          "status (VARCHAR) - 'COMPLETED', 'CANCELLED', 'REFUNDED'",
+          "created_at (TIMESTAMPTZ)",
+          "updated_at (TIMESTAMPTZ)"
+        ],
+        "description": "Order transactions. All amounts are in cents (divide by 100.0 for dollars). Filter by status = 'COMPLETED' for completed orders."
+      },
+      "order_items": {
+        "columns": [
+          "id (UUID, PK)",
+          "order_id (UUID, FK -> orders.id)",
+          "product_id (UUID, FK -> products.id)",
+          "item_name (VARCHAR) - raw name from source",
+          "canonical_name (VARCHAR) - normalized name",
+          "category (VARCHAR)",
+          "quantity (INTEGER)",
+          "unit_price_cents (INTEGER)",
+          "total_price_cents (INTEGER)",
+          "created_at (TIMESTAMPTZ)"
+        ],
+        "description": "Individual items in orders. Use canonical_name for product queries."
+      },
+      "products": {
+        "columns": [
+          "id (UUID, PK)",
+          "canonical_name (VARCHAR)",
+          "category (VARCHAR)",
+          "description (TEXT)",
+          "created_at (TIMESTAMPTZ)",
+          "updated_at (TIMESTAMPTZ)"
+        ],
+        "description": "Master product catalog with normalized product names."
+      }
+    },
+    "views": {
+      "daily_sales_summary": {
+        "columns": [
+          "location_name (VARCHAR)",
+          "business_date (DATE)",
+          "hour_of_day (INTEGER) - 0-23, extracted from timestamp for analytics",
+          "source_system (VARCHAR)",
+          "order_type (VARCHAR)",
+          "order_count (INTEGER)",
+          "total_revenue (NUMERIC) - already in dollars",
+          "net_revenue (NUMERIC)",
+          "total_tax (NUMERIC)",
+          "total_tips (NUMERIC)",
+          "avg_order_value (NUMERIC)"
+        ],
+        "description": "Pre-aggregated daily sales by location, date, hour, source system, and order type. Already filtered for COMPLETED orders. Revenue is already in dollars. Includes hour_of_day column for hourly analysis."
+      },
+      "top_products_revenue": {
+        "columns": [
+          "location_name (VARCHAR) - canonical location name",
+          "product_name (VARCHAR) - canonical product name (normalized via entity resolution, equivalent to order_items.canonical_name)",
+          "category (VARCHAR)",
+          "order_count (INTEGER) - number of distinct orders containing this product at this location",
+          "total_quantity_sold (INTEGER) - total units sold at this location",
+          "total_revenue (NUMERIC) - already in dollars, revenue at this location",
+          "avg_unit_price (NUMERIC)"
+        ],
+        "description": "Pre-aggregated product performance by location. The view groups by location_name, product_name, and category, meaning the same product in different locations appears as separate rows. IMPORTANT: When querying for top products across ALL locations, you MUST use GROUP BY product_name, category and SUM() all metrics. Without GROUP BY, you'll get duplicate products (one per location)."
+      }
+    },
+    "constraints": {
+      "locations": ["Downtown", "Airport", "Mall Location", "University"],
+      "dateRange": {
+        "start": "2025-01-01",
+        "end": "2025-01-04"
+      },
+      "orderTypes": ["DINE_IN", "TAKE_OUT", "PICKUP", "DELIVERY"],
+      "sourceSystems": ["Toast", "DoorDash", "Square"],
+      "productCategories": ["burgers", "sandwiches", "sides", "appetizers", "beverages", "breakfast", "entrees", "salads", "desserts", "alcohol", "unknown"]
+    }
+  },
+  "guidelines": [
+    "**QUERY GENERATION PROCESS - FOLLOW THESE STEPS**:",
+    "",
+    "STEP 1: CLASSIFY QUERY INTENT",
+    "  Determine if the query is asking for:",
+    "  A) COMPARISON: 'Which X generates highest Y', 'What X has the most Y', 'Compare X', 'Show me X by Y'",
+    "     → User wants to see ALL items to compare them",
+    "     → SQL: Get ALL items (NO LIMIT), ORDER BY metric DESC",
+    "     → Expected rows: All categories (e.g., all 4 locations, all 11 categories)",
+    "  B) TOP-N: 'Show me the top X', 'Top 5 products', 'What are the best selling items'",
+    "     → User wants a limited list of top results",
+    "     → SQL: LIMIT N (typically 5-10, max 1000)",
+    "     → Expected rows: N rows (e.g., 5-10 products)",
+    "  C) SPECIFIC: 'Show me sales for Downtown', 'Revenue for beverages'",
+    "     → User wants data for specific entity",
+    "     → **IMPORTANT**: If this would return only 1 row, you have TWO options:",
+    "       Option 1: Expand to show ALL categories for comparison (e.g., 'sales for beverages' → show all categories with beverages highlighted) - use pie chart",
+    "       Option 2: Return just the single row - use table chart (NEVER use bar chart for 1 row)",
+    "     → SQL: Either filter by specific value (returns 1 row → use table) OR get all categories (returns 3+ rows → use pie)",
+    "",
+    "STEP 2: CHOOSE DATA SOURCE",
+    "  **ALWAYS CHECK VIEWS FIRST** - They are pre-aggregated and faster:",
+    "  - Use daily_sales_summary for: location, date, hour, source_system, order_type queries",
+    "  - Use top_products_revenue for: product, category, location queries",
+    "  - Only query tables directly if views don't have the needed data",
+    "  - When querying orders table: JOIN with locations to get location_name, filter by status='COMPLETED', filter by business_date BETWEEN '2025-01-01' AND '2025-01-04'",
+    "",
+    "STEP 3: BUILD SQL QUERY",
+    "  - Use GROUP BY when aggregating across categories",
+    "  - **CRITICAL for top_products_revenue**: When querying across ALL locations, use GROUP BY product_name, category and SUM() all metrics",
+    "  - Divide _cents columns by 100.0 to get dollars (views already return dollars)",
+    "  - Use ROUND(..., 2) for AVG() and divisions",
+    "  - Use canonical_name for locations and products (not external IDs or item_name)",
+    "  - Include LIMIT when appropriate (for TOP-N queries, not COMPARISON queries)",
+    "",
+    "STEP 4: ESTIMATE RESULT SIZE",
+    "  Validate your query will return appropriate number of rows:",
+    "  - 'Top 5 products' → ~5 rows",
+    "  - 'Revenue by location' → ~4 rows (4 locations)",
+    "  - 'Which category is highest' → ~11 rows (all categories for comparison)",
+    "  - 'Peak hours for each location' → ~4 rows (one peak hour per location)",
+    "  - 'All hourly sales' → ~96 rows (24 hours × 4 locations)",
+    "  If your estimate doesn't match query intent, adjust the query",
+    "",
+    "STEP 5: SELECT CHART TYPE",
+    "  Use this decision tree:",
+    "  1. How many metrics?",
+    "     - ONE metric → continue to step 2",
+    "     - TWO metrics with different scales (e.g., revenue $ vs count) → combo",
+    "     - TWO metrics with similar scales (e.g., revenue vs net_revenue) → grouped_bar",
+    "  2. What is the X-axis?",
+    "     - Time/Date → line or area",
+    "     - Category → continue to step 3",
+    "  3. How many rows?",
+    "     - 1 row → **NEVER use bar chart** (single bar is not useful). Use table OR expand query to show all categories (pie chart)",
+    "     - 2 rows → table (for single metric) or grouped_bar (for two metrics)",
+    "     - 3-10 rows → bar (for comparisons) or pie (for proportions/distributions)",
+    "     - 20+ rows → line (if time-based) or table (if categorical)",
+    "  4. User intent keywords:",
+    "     - 'compare', 'which is highest' → bar (better for comparisons)",
+    "     - 'breakdown', 'distribution', 'by category' → pie (if 3+ rows) or bar",
+    "     - 'trend', 'over time' → line",
+    "     - 'list', 'show all' → table",
+    "",
+    "**CHART TYPE RULES**:",
+    "- bar: ONE metric across categories. Use for comparisons, top-N lists, single metric breakdowns. **NEVER use bar chart for 1-row results**",
+    "- line: ONE metric over time. X-axis must be time/date",
+    "- area: Similar to line, shows filled area for volume trends",
+    "- pie: Proportions/parts of whole. REQUIRES 3+ rows. Use for distributions. **For SPECIFIC queries that would return 1 row, consider expanding to show all categories (pie chart) OR use table**",
+    "- table: Lists, detailed data, multiple columns, **single-row results (1 row)**, or when exact numbers are important. **ALWAYS use table for SPECIFIC queries that return 1 row (unless you expand to show all categories for pie chart)**",
+    "- combo: TWO metrics with different scales (e.g., revenue $ + order count). Requires secondaryValueKey",
+    "- grouped_bar: TWO metrics with similar scales (e.g., revenue + net_revenue). Requires secondaryValueKey",
+    "",
+    "**CRITICAL VALIDATION CHECKS**:",
+    "- SQL SELECT must include categoryKey column (from dataMapping)",
+    "- SQL SELECT must include valueKey column (from dataMapping)",
+    "- For combo/grouped_bar: SQL SELECT must include both valueKey AND secondaryValueKey",
+    "- If using aggregation (SUM, COUNT, AVG), must GROUP BY all non-aggregated columns in SELECT",
+    "- If filtering by categoryKey in WHERE, still SELECT that column",
+    "- Pie chart chosen? Then SQL must return 3+ rows (no LIMIT 1)",
+    "- Comparison query? Then SQL must return ALL items (no LIMIT)",
+    "- Top-N query? Then SQL must include LIMIT N",
+    "",
+    "**AXIS LABELS**:",
+    "- xAxisLabel: Describe categories (e.g., 'Location', 'Date', 'Product Name', 'Order Type')",
+    "- yAxisLabel: Describe values with units (e.g., 'Revenue ($)', 'Order Count', 'Quantity Sold')",
+    "- Use proper capitalization and include units in parentheses when relevant"
+  ],
+  "examples": [
+    {
+      "query": "Show me total sales by location",
+      "sql": "SELECT location_name, SUM(total_revenue) as total_revenue FROM daily_sales_summary GROUP BY location_name ORDER BY total_revenue DESC",
+      "chartType": "bar",
+      "note": "COMPARISON query - shows all 4 locations. Bar chart for comparison."
+    },
+    {
+      "query": "What are the top 5 selling products?",
+      "sql": "SELECT product_name, category, SUM(total_revenue) AS total_revenue, SUM(order_count) AS order_count, SUM(total_quantity_sold) AS total_quantity_sold FROM top_products_revenue GROUP BY product_name, category ORDER BY total_revenue DESC LIMIT 5",
+      "chartType": "bar",
+      "note": "TOP-N query - LIMIT 5. Must GROUP BY because top_products_revenue groups by location."
+    },
+    {
+      "query": "Which category generates the highest revenue?",
+      "sql": "SELECT category, SUM(total_revenue) AS total_revenue FROM top_products_revenue GROUP BY category ORDER BY total_revenue DESC",
+      "chartType": "bar",
+      "note": "COMPARISON query - shows ALL categories (no LIMIT) so user can compare. Bar chart is better than pie for 'which is highest' comparisons."
+    },
+    {
+      "query": "Compare delivery vs dine-in revenue",
+      "sql": "SELECT order_type, SUM(total_revenue) as total_revenue FROM daily_sales_summary WHERE order_type IN ('DELIVERY', 'DINE_IN') GROUP BY order_type",
+      "chartType": "table",
+      "note": "2-row comparison - table is better than sparse bar chart for exact numbers."
+    },
+    {
+      "query": "Show me revenue breakdown by category",
+      "sql": "SELECT category, SUM(total_revenue) AS total_revenue FROM top_products_revenue GROUP BY category ORDER BY total_revenue DESC",
+      "chartType": "pie",
+      "note": "Distribution query - pie chart shows proportions. Returns all categories (3+ rows)."
+    },
+    {
+      "query": "Show me hourly sales trend",
+      "sql": "SELECT hour_of_day, SUM(total_revenue) AS total_revenue FROM daily_sales_summary GROUP BY hour_of_day ORDER BY hour_of_day",
+      "chartType": "line",
+      "note": "Time-based trend - line chart shows trend over hours."
+    }
+  ],
+  "importantRules": [
+    "Only generate SELECT queries (read-only)",
+    "**PREFER VIEWS OVER TABLES**: Always check if daily_sales_summary or top_products_revenue can answer the query before using tables",
+    "Only query from allowed tables: locations, orders, order_items, products",
+    "Only query from allowed views: daily_sales_summary, top_products_revenue",
+    "**CRITICAL**: top_products_revenue groups by location. For queries across ALL locations, use GROUP BY product_name, category and SUM() all metrics",
+    "When querying orders table: filter by status='COMPLETED' and business_date BETWEEN '2025-01-01' AND '2025-01-04'",
+    "Use canonical_name for locations and products (not external IDs or item_name)",
+    "Amount columns ending in _cents must be divided by 100.0 to get dollars",
+    "Views already return revenue in dollars (no division needed)",
+    "Always use ROUND(..., 2) for AVG() and divisions",
+    "Include LIMIT clause for TOP-N queries (max 1000 rows), but NOT for COMPARISON queries",
+    "**COMPARISON vs TOP-N**: 'Which X is highest' = COMPARISON (all items, no LIMIT). 'Top 5 X' = TOP-N (LIMIT 5)",
+    "**CHART TYPE**: Choose based on metrics count, data type, row count, and user intent. Follow the decision tree in guidelines",
+    "**SINGLE-ROW RESULTS**: If a SPECIFIC query would return 1 row (e.g., 'sales for beverages'), you have two options: (1) Expand the query to show ALL categories for comparison (pie chart showing beverages vs all others), OR (2) Return just the single row (table chart). **NEVER use bar chart for 1-row results** - a single bar is not useful",
+    "**PIE CHARTS**: Require 3+ rows. Use for distributions. For SPECIFIC queries, you can expand to show all categories (pie chart) instead of returning just 1 row",
+    "**DUAL METRICS**: combo and grouped_bar require TWO metrics. Include secondaryValueKey in dataMapping and SQL SELECT",
+    "**SQL VALIDATION**: SELECT must include categoryKey, valueKey, and (if applicable) secondaryValueKey. GROUP BY all non-aggregated columns"
+  ]
+}
